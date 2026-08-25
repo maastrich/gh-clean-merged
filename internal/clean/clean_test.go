@@ -56,9 +56,15 @@ func TestAnalyzeKeepsProtectedBranches(t *testing.T) {
 			reason: "worktree /tmp/wt",
 		},
 		{
+			name:   "matched by a protected glob",
+			branch: git.Branch{Name: "prod/lcm"},
+			opts:   Options{Remote: "origin", Base: "main", Protected: []string{"prod/*"}},
+			reason: "protected",
+		},
+		{
 			name:   "explicitly protected",
 			branch: git.Branch{Name: "release"},
-			opts:   Options{Remote: "origin", Base: "main", Protected: map[string]bool{"release": true}},
+			opts:   Options{Remote: "origin", Base: "main", Protected: []string{"release"}},
 			reason: "protected",
 		},
 		{
@@ -176,6 +182,55 @@ func TestAnalyzeKeepsGoneBranchWithUnmergedWork(t *testing.T) {
 	}
 	if !strings.Contains(v.Reason, "upstream gone") {
 		t.Errorf("reason = %q, want it to mention the gone upstream", v.Reason)
+	}
+}
+
+// Deploy branches such as prod/* carry no pull request and sit behind the base
+// branch, which makes them look merged. Their live remote branch is what keeps
+// them, and a merged pull request is what overrides that.
+func TestAnalyzeKeepsBranchesWithLiveRemote(t *testing.T) {
+	fixture(t)
+
+	live := git.Branch{Name: "empty", Upstream: "origin/empty"}
+	v := only(t, Analyze([]git.Branch{live}, "main", Options{Remote: "origin", Base: "main"}))
+	if v.Delete {
+		t.Fatalf("a branch still on the remote should be kept, got reason %q", v.Reason)
+	}
+	if !strings.Contains(v.Reason, "still on origin") {
+		t.Errorf("reason = %q, want it to mention the live remote branch", v.Reason)
+	}
+
+	// --include-live judges it on content alone.
+	v = only(t, Analyze([]git.Branch{live}, "main", Options{Remote: "origin", Base: "main", IncludeLive: true}))
+	if !v.Delete {
+		t.Errorf("with IncludeLive the branch should be deleted, got reason %q", v.Reason)
+	}
+
+	// A merged pull request outranks the live remote branch.
+	v = only(t, Analyze([]git.Branch{{Name: "squashed", Upstream: "origin/squashed"}}, "main", Options{
+		Remote: "origin",
+		Base:   "main",
+		PRs:    map[string]github.PR{"squashed": {Number: 4, Merged: true, State: "MERGED"}},
+	}))
+	if !v.Delete || !v.Force {
+		t.Errorf("a merged pull request should delete the branch, got %+v", v)
+	}
+}
+
+// Without tracking configuration the remote branch is looked up by name.
+func TestAnalyzeKeepsUntrackedBranchWithRemoteOfSameName(t *testing.T) {
+	fixture(t)
+
+	v := only(t, Analyze(branches("merged"), "main", Options{
+		Remote:       "origin",
+		Base:         "main",
+		RemoteExists: func(string) bool { return true },
+	}))
+	if v.Delete {
+		t.Fatalf("branch should be kept, got reason %q", v.Reason)
+	}
+	if !strings.Contains(v.Reason, "still on origin") {
+		t.Errorf("reason = %q, want it to mention the live remote branch", v.Reason)
 	}
 }
 

@@ -4,6 +4,7 @@ package clean
 
 import (
 	"fmt"
+	"path"
 
 	"github.com/maastrich/gh-clean-merged/internal/git"
 	"github.com/maastrich/gh-clean-merged/internal/github"
@@ -30,9 +31,31 @@ type Options struct {
 	// PRs maps head branch name to its pull request; may be nil when the
 	// GitHub lookup was skipped or failed.
 	PRs map[string]github.PR
-	// Protected branches that must never be deleted, on top of the current and
-	// base branches.
-	Protected map[string]bool
+	// Protected holds branch names or glob patterns that must never be deleted,
+	// on top of the current and base branches.
+	Protected []string
+	// RemoteExists reports whether a branch of that name still exists on the
+	// remote. Long lived branches such as deploy branches sit behind the base
+	// branch, which makes them look merged, so a live remote counterpart keeps
+	// them unless a merged pull request says otherwise.
+	RemoteExists func(branch string) bool
+	// IncludeLive drops that protection and judges branches with a live remote
+	// counterpart on their content alone.
+	IncludeLive bool
+}
+
+// protects reports whether the branch matches one of the protected patterns.
+// Patterns are shell globs, so "prod/*" covers every deploy branch at once.
+func (o Options) protects(branch string) bool {
+	for _, pattern := range o.Protected {
+		if pattern == branch {
+			return true
+		}
+		if ok, err := path.Match(pattern, branch); err == nil && ok {
+			return true
+		}
+	}
+	return false
 }
 
 // Analyze classifies every local branch against the base branch.
@@ -58,7 +81,7 @@ func analyzeBranch(branch git.Branch, current, baseRef string, opts Options) Ver
 		return keep("currently checked out")
 	case branch.Worktree != "":
 		return keep(fmt.Sprintf("checked out in worktree %s", branch.Worktree))
-	case opts.Protected[branch.Name]:
+	case opts.protects(branch.Name):
 		return keep("protected")
 	}
 
@@ -71,24 +94,33 @@ func analyzeBranch(branch git.Branch, current, baseRef string, opts Options) Ver
 		return keep(fmt.Sprintf("open PR #%d", pr.Number))
 	}
 
-	// Plain merge commit or fast-forward: git can prove containment on its own.
-	if git.IsAncestor(branch.Name, baseRef) {
-		reason := fmt.Sprintf("merged into %s", baseRef)
-		if hasPR && pr.Merged {
-			reason = fmt.Sprintf("PR #%d merged", pr.Number)
-		}
-		return Verdict{Branch: branch, Delete: true, Reason: reason}
-	}
-
-	// Squash and rebase merges rewrite history, so the branch is no longer an
-	// ancestor of base and only GitHub knows the merge happened.
+	// A merged pull request is the one signal that survives everything else: the
+	// branch did its job and GitHub says so.
 	if hasPR && pr.Merged {
+		if git.IsAncestor(branch.Name, baseRef) {
+			return Verdict{Branch: branch, Delete: true, Reason: fmt.Sprintf("PR #%d merged", pr.Number)}
+		}
+		// Squash and rebase merges rewrite history, so the branch is no longer
+		// an ancestor of base and git alone cannot see the merge.
 		return Verdict{
 			Branch: branch,
 			Delete: true,
 			Force:  true,
 			Reason: fmt.Sprintf("PR #%d merged (squash or rebase)", pr.Number),
 		}
+	}
+
+	// Long lived branches such as prod/*, beta/* or preprod/* never have a pull
+	// request of their own: the base branch is merged into them, or they simply
+	// track an older release commit. Both make them look merged. Their remote
+	// counterpart still being there is what tells them apart from finished work.
+	if !opts.IncludeLive && liveRemote(branch, opts) {
+		return keep(fmt.Sprintf("still on %s", opts.Remote))
+	}
+
+	// Plain merge commit or fast-forward: git can prove containment on its own.
+	if git.IsAncestor(branch.Name, baseRef) {
+		return Verdict{Branch: branch, Delete: true, Reason: fmt.Sprintf("merged into %s", baseRef)}
 	}
 
 	// No pull request, or one we could not read: fall back to comparing the
@@ -123,6 +155,16 @@ func analyzeBranch(branch git.Branch, current, baseRef string, opts Options) Ver
 		return keep("upstream gone but changes not in " + baseRef)
 	}
 	return keep("has unmerged changes")
+}
+
+// liveRemote reports whether the branch still has a counterpart on the remote.
+func liveRemote(branch git.Branch, opts Options) bool {
+	if branch.Upstream != "" {
+		return !branch.Gone
+	}
+	// No tracking configuration: fall back to a branch of the same name, which
+	// is what a plain `git push` would have created.
+	return opts.RemoteExists != nil && opts.RemoteExists(branch.Name)
 }
 
 // Deletable filters verdicts down to the branches that will be removed.

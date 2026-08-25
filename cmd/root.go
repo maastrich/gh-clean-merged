@@ -13,14 +13,15 @@ import (
 )
 
 var (
-	dryRun    bool
-	assumeYes bool
-	base      string
-	remote    string
-	noFetch   bool
-	protected []string
-	prLimit   int
-	verbose   bool
+	dryRun      bool
+	assumeYes   bool
+	base        string
+	remote      string
+	noFetch     bool
+	protected   []string
+	prLimit     int
+	verbose     bool
+	includeLive bool
 )
 
 var rootCmd = &cobra.Command{
@@ -50,7 +51,8 @@ func init() {
 	flags.StringVarP(&base, "base", "b", "", "Base branch to compare against (default: the repository default branch)")
 	flags.StringVar(&remote, "remote", "origin", "Remote holding the base branch")
 	flags.BoolVar(&noFetch, "no-fetch", false, "Skip `git fetch --prune`, comparing against the refs already on disk")
-	flags.StringSliceVar(&protected, "protected", nil, "Branch names that must never be deleted (repeatable, or comma separated)")
+	flags.StringSliceVar(&protected, "protected", nil, "Branch names or globs that must never be deleted, e.g. `prod/*` (repeatable, or comma separated)")
+	flags.BoolVar(&includeLive, "include-live", false, "Also consider branches whose remote branch still exists, instead of keeping them")
 	flags.IntVar(&prLimit, "limit", 200, "Maximum number of pull requests to inspect")
 	flags.BoolVarP(&verbose, "verbose", "v", false, "Also list the branches that are kept, with the reason")
 }
@@ -100,18 +102,22 @@ func run(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	protectedSet := map[string]bool{}
-	for _, name := range protected {
-		if name = strings.TrimSpace(name); name != "" {
-			protectedSet[name] = true
+	patterns := make([]string, 0, len(protected))
+	for _, pattern := range protected {
+		if pattern = strings.TrimSpace(pattern); pattern != "" {
+			patterns = append(patterns, pattern)
 		}
 	}
 
 	verdicts := clean.Analyze(branches, git.CurrentBranch(), clean.Options{
-		Remote:    remote,
-		Base:      base,
-		PRs:       prs,
-		Protected: protectedSet,
+		Remote:      remote,
+		Base:        base,
+		PRs:         prs,
+		Protected:   patterns,
+		IncludeLive: includeLive,
+		RemoteExists: func(branch string) bool {
+			return git.HasRemoteRef(remote, branch)
+		},
 	})
 
 	if verbose {

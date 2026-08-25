@@ -34,7 +34,8 @@ gh clean-merged --verbose    # also list the kept branches and why
 | `-b`, `--base` | Base branch to compare against (default: the repository default branch) |
 | `--remote` | Remote holding the base branch (default `origin`) |
 | `--no-fetch` | Skip `git fetch --prune` and use the refs already on disk |
-| `--protected` | Branch names that must never be deleted (repeatable, or comma separated) |
+| `--protected` | Branch names or globs that must never be deleted, e.g. `prod/*` (repeatable, or comma separated) |
+| `--include-live` | Also consider branches whose remote branch still exists, instead of keeping them |
 | `--limit` | Maximum number of pull requests to inspect (default `200`) |
 | `-v`, `--verbose` | Also list the branches that are kept, with the reason |
 
@@ -42,12 +43,15 @@ gh clean-merged --verbose    # also list the kept branches and why
 
 A branch is deleted only when one of these proves its changes are on the base branch:
 
-1. **Contained in the base branch** — the ordinary merge-commit or fast-forward case, which git can prove on its own.
-2. **Its pull request is merged on GitHub** — the decisive signal for squash and rebase merges, since GitHub knows the merge happened even though git does not.
+1. **Its pull request is merged on GitHub** — the decisive signal for squash and rebase merges, since GitHub knows the merge happened even though git does not.
+2. **Contained in the base branch** — the ordinary merge-commit or fast-forward case, which git can prove on its own.
 3. **Its diff is already applied** — for branches that never had a pull request, the branch's cumulative change is compared against the patches in the base branch by patch id.
+
+Signals 2 and 3 only apply to branches whose remote counterpart is gone, because a live remote branch means the branch is still shared work — see below.
 
 Everything else is kept, with the reason printed under `--verbose`. In particular:
 
+- **A branch that still exists on the remote is kept** unless a merged pull request says otherwise. Long lived branches — `prod/*`, `beta/*`, `preprod/*` and friends — never have a pull request of their own and sit behind the base branch, either because the base branch is merged into them or because they track an older release commit. That makes them look merged to any content comparison, and their live remote branch is what tells them apart from finished work. Pass `--include-live` to judge those on content alone, and `--protected 'prod/*'` to keep specific ones regardless.
 - **A deleted remote branch is not proof.** `git fetch --prune` marking an upstream as gone happens on abandoned pull requests too, so a `gone` branch with changes of its own is kept.
 - **An open pull request outranks every other signal**, even if the changes already reached the base branch some other way.
 - **A pull request from a fork never matches a local branch**, even when the branch names are identical — that match would delete unrelated local work.
