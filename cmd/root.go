@@ -100,24 +100,26 @@ func run(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	var prs map[string]github.PR
-	if repoErr == nil {
-		if prs, err = github.PullRequestsByBranch(repo, branchNames(branches)); err != nil {
-			warn(out, fmt.Sprintf("could not look up pull requests (%v)", err))
-			warn(out, "branches will be reported, not deleted")
-		}
-	}
-
-	verdicts := clean.Analyze(branches, git.CurrentBranch(), clean.Options{
+	opts := clean.Options{
 		Remote:     remote,
 		Base:       base,
-		PRs:        prs,
 		Protected:  patterns(),
 		KeepClosed: keepClosed,
 		RemoteExists: func(branch string) bool {
 			return git.HasRemoteRef(remote, branch)
 		},
-	})
+	}
+
+	var prs map[string]github.PR
+	if repoErr == nil {
+		if prs, err = github.PullRequestsByBranch(repo, branchNames(branches, opts)); err != nil {
+			warn(out, fmt.Sprintf("could not look up pull requests (%v)", err))
+			warn(out, "branches will be reported, not deleted")
+		}
+	}
+
+	opts.PRs = prs
+	verdicts := clean.Analyze(branches, git.CurrentBranch(), opts)
 
 	out.Printf("%s %s  %s\n\n",
 		out.Bold("Base branch"),
@@ -176,12 +178,22 @@ func rows(out *ui.Printer, verdicts []clean.Verdict, marker string, paint func(s
 	return result
 }
 
-func branchNames(branches []git.Branch) []string {
+// branchNames lists the branches worth looking up on GitHub.
+//
+// A branch that still exists on the remote is kept whatever its pull request
+// says, so its pull request is only fetched when --verbose is going to print
+// the reason. On a repository where most branches are still on the remote, that
+// is most of the lookup skipped.
+func branchNames(branches []git.Branch, opts clean.Options) []string {
 	names := make([]string, 0, len(branches))
 	for _, branch := range branches {
-		if branch.Name != base {
-			names = append(names, branch.Name)
+		if branch.Name == base {
+			continue
 		}
+		if !verbose && clean.LiveRemote(branch, opts) {
+			continue
+		}
+		names = append(names, branch.Name)
 	}
 	return names
 }

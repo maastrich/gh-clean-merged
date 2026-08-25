@@ -73,7 +73,7 @@ Sections are colour coded, and the colours come from the sixteen ANSI colours ra
 
 ## Speed
 
-Branches are analysed in parallel across the available cores, and the pull request lookup is a handful of batched GraphQL requests rather than one per branch. A repository with ~290 local branches takes a couple of seconds, plus the `git fetch` — pass `--no-fetch` to skip that when the refs are fresh.
+Branches are analysed in parallel across the available cores, and the pull request lookup is a handful of batched GraphQL requests rather than one per branch. Branches that still exist on the remote are kept whatever their pull request says, so their pull request is only looked up under `--verbose`, where the reason is actually printed. A repository with ~290 local branches takes a couple of seconds, plus the `git fetch` — pass `--no-fetch` to skip that when the refs are fresh.
 
 ## Development
 

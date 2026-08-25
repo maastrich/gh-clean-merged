@@ -190,7 +190,15 @@ func describe(branch string, opts Options) string {
 	return fmt.Sprintf("no pull request, changes not in %s", baseRef)
 }
 
-// liveRemote reports whether the branch still has a counterpart on the remote.
+// LiveRemote reports whether the branch still has a counterpart on the remote.
+//
+// Callers use it to skip work: such a branch is kept whatever its pull request
+// says, so looking that pull request up is only worth it when the reason is
+// going to be shown.
+func LiveRemote(branch git.Branch, opts Options) bool {
+	return liveRemote(branch, opts)
+}
+
 func liveRemote(branch git.Branch, opts Options) bool {
 	if branch.Upstream != "" {
 		return !branch.Gone
