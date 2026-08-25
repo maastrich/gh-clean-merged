@@ -85,3 +85,38 @@ func TestHasRemoteRef(t *testing.T) {
 		t.Error("origin/nope should not exist")
 	}
 }
+
+// The -d / -D split is the one decision here that can destroy commits, so it is
+// exercised for real rather than asserted on a verdict.
+func TestDelete(t *testing.T) {
+	fixture(t)
+
+	// git branch -d cannot see a squash merge and refuses, which is exactly why
+	// callers must pass force for branches proved by patch or by pull request.
+	if err := Delete("squashed", false); err == nil {
+		t.Error("git branch -d should refuse a squash-merged branch")
+	}
+	if err := Delete("squashed", true); err != nil {
+		t.Fatalf("git branch -D should delete a squash-merged branch: %v", err)
+	}
+
+	// A merge commit leaves ancestry behind, so the safe flag is enough.
+	if err := Delete("merged", false); err != nil {
+		t.Fatalf("git branch -d should delete a merged branch: %v", err)
+	}
+
+	branches, err := LocalBranches()
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, b := range branches {
+		names[b.Name] = true
+	}
+	if names["squashed"] || names["merged"] {
+		t.Error("deleted branches should be gone")
+	}
+	if !names["unmerged"] {
+		t.Error("unmerged should have been left alone")
+	}
+}

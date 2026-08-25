@@ -206,6 +206,11 @@ func fixture(t *testing.T) string {
 	}
 	t.Cleanup(func() { os.Chdir(previous) })
 
+	// Hide the developer's git configuration, so the tests exercise the same
+	// identity-less environment CI runs in.
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(dir, "nonexistent-gitconfig"))
+	t.Setenv("GIT_CONFIG_SYSTEM", filepath.Join(dir, "nonexistent-gitconfig"))
+
 	run := func(args ...string) {
 		t.Helper()
 		cmd := exec.Command("git", args...)

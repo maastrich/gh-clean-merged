@@ -24,7 +24,7 @@ var (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "gh-clean-merged",
+	Use:   "gh clean-merged",
 	Short: "Delete local branches whose work already landed on the base branch",
 	Long: `Delete local git branches whose changes are already on the base branch.
 

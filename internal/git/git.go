@@ -4,6 +4,7 @@ package git
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -17,7 +18,14 @@ type Branch struct {
 }
 
 func run(args ...string) (string, error) {
+	return runWithEnv(nil, args...)
+}
+
+func runWithEnv(env []string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -177,7 +185,15 @@ func SquashMerged(branch, base string) (SquashState, error) {
 		return SquashEmpty, nil
 	}
 
-	dangling, err := run("commit-tree", tree, "-p", mergeBase, "-m", "gh-clean-merged probe")
+	// commit-tree needs an author, and this probe commit is dangling and never
+	// published, so supply an identity rather than fail where git is unconfigured.
+	probeIdentity := []string{
+		"GIT_AUTHOR_NAME=gh-clean-merged",
+		"GIT_AUTHOR_EMAIL=gh-clean-merged@localhost",
+		"GIT_COMMITTER_NAME=gh-clean-merged",
+		"GIT_COMMITTER_EMAIL=gh-clean-merged@localhost",
+	}
+	dangling, err := runWithEnv(probeIdentity, "commit-tree", tree, "-p", mergeBase, "-m", "gh-clean-merged probe")
 	if err != nil {
 		return SquashUnknown, err
 	}
