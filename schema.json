@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/maastrich/gh-clean-merged/main/schema.json",
+  "title": "gh-clean-merged configuration",
+  "description": "Optional configuration for the gh-clean-merged extension. A global file lives under the user's config directory, a local one at the root of a repository; the local file wins, except for protected patterns which add up, and command line flags win over both.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "URL of this schema, for editor completion and validation."
+    },
+    "base": {
+      "type": "string",
+      "description": "Base branch that branches with no pull request are compared against. Defaults to the repository default branch.",
+      "examples": ["main", "master"]
+    },
+    "remote": {
+      "type": "string",
+      "description": "Remote whose branches count as shared work.",
+      "default": "origin"
+    },
+    "protected": {
+      "type": "array",
+      "description": "Branch names or globs that must never be deleted. Values from the global and local files add up.",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true,
+      "examples": [["prod/*", "release"]]
+    },
+    "keepClosed": {
+      "type": "boolean",
+      "description": "Keep branches whose pull request was closed without merging, instead of deleting them along with the merged ones.",
+      "default": false
+    },
+    "noFetch": {
+      "type": "boolean",
+      "description": "Skip `git fetch --prune` and use the refs already on disk.",
+      "default": false
+    },
+    "dryRun": {
+      "type": "boolean",
+      "description": "List what would be deleted and exit.",
+      "default": false
+    },
+    "verbose": {
+      "type": "boolean",
+      "description": "Also list the branches that are kept, with the reason.",
+      "default": false
+    },
+    "color": {
+      "type": "string",
+      "description": "Colour output. `auto` turns colour off when the output is piped, under TERM=dumb and under NO_COLOR.",
+      "enum": ["auto", "always", "never"],
+      "default": "auto"
+    }
+  }
+}

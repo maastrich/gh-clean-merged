@@ -138,6 +138,12 @@ func worktreeBranches() (map[string]string, error) {
 	return result, nil
 }
 
+// Root is the top level directory of the repository, where a local
+// configuration file would sit.
+func Root() (string, error) {
+	return run("rev-parse", "--show-toplevel")
+}
+
 // IsAncestor reports whether every commit of branch is already contained in ref.
 // This is the plain merge-commit / fast-forward case.
 func IsAncestor(branch, ref string) bool {

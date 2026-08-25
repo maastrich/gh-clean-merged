@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/maastrich/gh-clean-merged/internal/clean"
+	"github.com/maastrich/gh-clean-merged/internal/config"
 	"github.com/maastrich/gh-clean-merged/internal/git"
 	"github.com/maastrich/gh-clean-merged/internal/github"
 	"github.com/maastrich/gh-clean-merged/internal/ui"
@@ -23,12 +24,15 @@ var (
 	verbose    bool
 	keepClosed bool
 	colorMode  string
+	noConfig   bool
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "gh clean-merged",
+	Use:   "clean-merged",
 	Short: "Delete the local branches whose pull request is closed or merged",
 	Long: `Delete the local git branches left behind by finished pull requests.
+
+Runs as ` + "`gh clean-merged`" + `.
 
 A branch that still exists on the remote is left alone: it is shared work, and
 long lived branches such as prod/*, beta/* or preprod/* live there. What remains
@@ -60,14 +64,28 @@ func init() {
 	flags.StringSliceVar(&protected, "protected", nil, "Branch names or globs that must never be deleted, e.g. `prod/*` (repeatable, or comma separated)")
 	flags.BoolVar(&keepClosed, "keep-closed", false, "Keep branches whose pull request was closed without merging")
 	flags.BoolVarP(&verbose, "verbose", "v", false, "Also list the branches that are kept, with the reason")
-	flags.StringVar(&colorMode, "color", ui.Auto, "Colour output: auto, always or never")
+	// Colour applies to the config subcommands too.
+	rootCmd.PersistentFlags().StringVar(&colorMode, "color", ui.Auto, "Colour output: auto, always or never")
+	flags.BoolVar(&noConfig, "no-config", false, "Ignore the global and local configuration files")
 }
 
 func run(cmd *cobra.Command, args []string) error {
-	out := ui.New(os.Stdout, colorMode)
-
 	if !git.IsRepo() {
 		return fmt.Errorf("not inside a git repository")
+	}
+
+	// Configuration first: it can set the colour mode, the remote and whether
+	// to fetch, all of which the rest of this function depends on.
+	sources, err := applyConfig(cmd)
+	if err != nil {
+		return err
+	}
+
+	out := ui.New(os.Stdout, colorMode)
+	if verbose {
+		for _, source := range sources {
+			out.Printf("%s %s\n", out.Dim("Configuration"), out.Dim(source))
+		}
 	}
 
 	if !noFetch {
@@ -210,6 +228,50 @@ func patterns() []string {
 
 func warn(out *ui.Printer, message string) {
 	fmt.Fprintf(os.Stderr, "%s %s\n", out.Yellow("Warning:"), message)
+}
+
+// applyConfig lays the configuration files under the flags: a flag the user
+// actually typed always wins, everything else comes from the files. It returns
+// the files that contributed.
+func applyConfig(cmd *cobra.Command) ([]string, error) {
+	if noConfig {
+		return nil, nil
+	}
+
+	// A repository without a root is not a repository, and the global file
+	// still applies, so a failure here is not fatal.
+	root, _ := git.Root()
+
+	cfg, err := config.Load(root)
+	if err != nil {
+		return nil, err
+	}
+
+	flags := cmd.Flags()
+	setString := func(name string, value *string, target *string) {
+		if value != nil && !flags.Changed(name) {
+			*target = *value
+		}
+	}
+	setBool := func(name string, value *bool, target *bool) {
+		if value != nil && !flags.Changed(name) {
+			*target = *value
+		}
+	}
+
+	setString("base", cfg.Base, &base)
+	setString("remote", cfg.Remote, &remote)
+	setString("color", cfg.Color, &colorMode)
+	setBool("keep-closed", cfg.KeepClosed, &keepClosed)
+	setBool("no-fetch", cfg.NoFetch, &noFetch)
+	setBool("verbose", cfg.Verbose, &verbose)
+	setBool("dry-run", cfg.DryRun, &dryRun)
+
+	// Protected patterns accumulate rather than replace: what the files protect
+	// and what the flag protects are both meant.
+	protected = append(cfg.Protected, protected...)
+
+	return cfg.Sources, nil
 }
 
 // resolveBase prefers the remote's HEAD, which reflects what the local clone
