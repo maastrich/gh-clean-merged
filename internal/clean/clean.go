@@ -54,7 +54,7 @@ type Options struct {
 }
 
 // protects reports whether the branch matches one of the protected patterns.
-// Patterns are shell globs, so "prod/*" covers every deploy branch at once.
+// Patterns are shell globs, so "protected/*" covers every deploy branch at once.
 func (o Options) protects(branch string) bool {
 	for _, pattern := range o.Protected {
 		if pattern == branch {
@@ -129,8 +129,8 @@ func analyzeBranch(branch git.Branch, current string, opts Options) Verdict {
 	}
 
 	// A branch that still exists on the remote is shared work: someone may be
-	// deploying from it, or merging the base branch into it. Long lived
-	// branches such as prod/*, beta/* and preprod/* live here too.
+	// deploying from it, or merging the base branch into it. Long lived deploy
+	// branches live here too.
 	if liveRemote(branch, opts) {
 		return keep(fmt.Sprintf("still on %s", opts.Remote))
 	}

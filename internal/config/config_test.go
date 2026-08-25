@@ -47,7 +47,7 @@ func TestLoadMergesGlobalAndLocal(t *testing.T) {
 	}`)
 	write(t, filepath.Join(repo, LocalName), `{
 		"base": "master",
-		"protected": ["prod/*", "release"],
+		"protected": ["protected/*", "release"],
 		"keepClosed": false
 	}`)
 
@@ -71,7 +71,7 @@ func TestLoadMergesGlobalAndLocal(t *testing.T) {
 		t.Errorf("verbose = %v, want the global true to survive", cfg.Verbose)
 	}
 	// Patterns accumulate, in order, without repeating what both files list.
-	if want := []string{"release", "prod/*"}; !reflect.DeepEqual(cfg.Protected, want) {
+	if want := []string{"release", "protected/*"}; !reflect.DeepEqual(cfg.Protected, want) {
 		t.Errorf("protected = %v, want %v", cfg.Protected, want)
 	}
 	if len(cfg.Sources) != 2 {
@@ -97,7 +97,7 @@ func TestLoadWithoutRepositoryReadsGlobalOnly(t *testing.T) {
 func TestLoadRejectsUnknownKeys(t *testing.T) {
 	repo := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	write(t, filepath.Join(repo, LocalName), `{"protcted": ["prod/*"]}`)
+	write(t, filepath.Join(repo, LocalName), `{"protcted": ["protected/*"]}`)
 
 	_, err := Load(repo)
 	if err == nil {

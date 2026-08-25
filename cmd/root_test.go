@@ -13,7 +13,7 @@ import (
 func TestBranchNamesSkipsLiveRemoteBranchesUnlessVerbose(t *testing.T) {
 	branches := []git.Branch{
 		{Name: "master"},
-		{Name: "prod/api", Upstream: "origin/prod/api"},
+		{Name: "protected/api", Upstream: "origin/protected/api"},
 		{Name: "feat/done", Upstream: "origin/feat/done", Gone: true},
 		{Name: "feat/local"},
 	}
@@ -32,7 +32,7 @@ func TestBranchNamesSkipsLiveRemoteBranchesUnlessVerbose(t *testing.T) {
 
 	verbose = true
 	got = branchNames(branches, opts)
-	want = []string{"prod/api", "feat/done", "feat/local"}
+	want = []string{"protected/api", "feat/done", "feat/local"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("verbose branchNames = %v, want %v", got, want)
 	}

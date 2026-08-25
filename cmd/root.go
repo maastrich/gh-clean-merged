@@ -35,7 +35,7 @@ var rootCmd = &cobra.Command{
 Runs as ` + "`gh clean-merged`" + `.
 
 A branch that still exists on the remote is left alone: it is shared work, and
-long lived branches such as prod/*, beta/* or preprod/* live there. What remains
+long lived deploy branches live there. What remains
 is local leftovers, and their pull request says what happened to them — merged
 or closed means gone, open means keep. Squash and rebase merges are handled,
 since the answer comes from GitHub rather than from git history.
@@ -61,7 +61,7 @@ func init() {
 	flags.StringVarP(&base, "base", "b", "", "Base branch orphan branches are compared against (default: the repository default branch)")
 	flags.StringVar(&remote, "remote", "origin", "Remote whose branches count as shared work")
 	flags.BoolVar(&noFetch, "no-fetch", false, "Skip `git fetch --prune`, using the refs already on disk")
-	flags.StringSliceVar(&protected, "protected", nil, "Branch names or globs that must never be deleted, e.g. `prod/*` (repeatable, or comma separated)")
+	flags.StringSliceVar(&protected, "protected", nil, "Branch names or globs that must never be deleted, e.g. `protected/*` (repeatable, or comma separated)")
 	flags.BoolVar(&keepClosed, "keep-closed", false, "Keep branches whose pull request was closed without merging")
 	flags.BoolVarP(&verbose, "verbose", "v", false, "Also list the branches that are kept, with the reason")
 	// Colour applies to the config subcommands too.

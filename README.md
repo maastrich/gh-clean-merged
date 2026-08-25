@@ -34,7 +34,7 @@ gh clean-merged --verbose    # also list the kept branches and why
 | `-b`, `--base` | Base branch orphan branches are compared against (default: the repository default branch) |
 | `--remote` | Remote whose branches count as shared work (default `origin`) |
 | `--keep-closed` | Keep branches whose pull request was closed without merging |
-| `--protected` | Branch names or globs that must never be deleted, e.g. `prod/*` (repeatable, or comma separated) |
+| `--protected` | Branch names or globs that must never be deleted, e.g. `protected/*` (repeatable, or comma separated) |
 | `--no-fetch` | Skip `git fetch --prune` and use the refs already on disk |
 | `--no-config` | Ignore the configuration files |
 | `-v`, `--verbose` | Also list the branches that are kept, with the reason |
@@ -56,7 +56,7 @@ They are merged, and the command line wins over both: **defaults → global → 
   "$schema": "https://raw.githubusercontent.com/maastrich/gh-clean-merged/main/schema.json",
   "base": "main",
   "remote": "origin",
-  "protected": ["prod/*", "beta/*", "release"],
+  "protected": ["protected/*", "release"],
   "keepClosed": true,
   "noFetch": false,
   "dryRun": false,
@@ -72,10 +72,10 @@ Unknown keys are an error rather than a silent no-op, and [`schema.json`](schema
 Subcommands work on the repository's file, or on the global one with `-g`:
 
 ```sh
-gh clean-merged config add protected 'prod/*' 'beta/*'   # append to this repository's list
+gh clean-merged config add protected 'protected/*' 'staging/*'   # append to this repository's list
 gh clean-merged config set -g protected 'release'        # replace the global list
 gh clean-merged config set -g keepClosed true
-gh clean-merged config remove protected 'beta/*'
+gh clean-merged config remove protected 'staging/*'
 gh clean-merged config unset base                        # let the next file up decide again
 gh clean-merged config list                              # resolved values, and where they came from
 gh clean-merged config get protected
@@ -88,7 +88,7 @@ gh clean-merged config path -g
 
 Every local branch goes through the same three questions.
 
-**1. Does it still exist on the remote?** Then it is shared work — someone may be reviewing it, deploying from it, or merging the base branch into it — and it is left alone. Long lived branches such as `prod/*`, `beta/*` and `preprod/*` live here: they carry no pull request of their own and sit behind the base branch, so any content comparison would wrongly call them merged.
+**1. Does it still exist on the remote?** Then it is shared work — someone may be reviewing it, deploying from it, or merging the base branch into it — and it is left alone. Long lived deploy branches live here: they carry no pull request of their own and sit behind the base branch, so any content comparison would wrongly call them merged.
 
 **2. Otherwise, what does its pull request say?**
 

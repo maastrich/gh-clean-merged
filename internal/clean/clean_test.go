@@ -58,8 +58,8 @@ func TestAnalyzeKeepsProtectedBranches(t *testing.T) {
 		},
 		{
 			name:   "matched by a protected glob",
-			branch: git.Branch{Name: "prod/api"},
-			opts:   Options{Remote: "origin", Base: "main", Protected: []string{"prod/*"}},
+			branch: git.Branch{Name: "protected/api"},
+			opts:   Options{Remote: "origin", Base: "main", Protected: []string{"protected/*"}},
 			reason: "protected",
 		},
 		{
@@ -84,7 +84,7 @@ func TestAnalyzeKeepsProtectedBranches(t *testing.T) {
 }
 
 // A branch still on the remote is shared work, whatever its content says.
-// Deploy branches such as prod/* live here: they carry no pull request and sit
+// Deploy branches live here: they carry no pull request of their own and sit
 // behind the base branch, so any content comparison would call them merged.
 func TestAnalyzeKeepsBranchesStillOnTheRemote(t *testing.T) {
 	cases := []struct {
@@ -94,12 +94,12 @@ func TestAnalyzeKeepsBranchesStillOnTheRemote(t *testing.T) {
 	}{
 		{
 			name:   "tracked branch whose upstream is alive",
-			branch: git.Branch{Name: "prod/api", Upstream: "origin/prod/api"},
+			branch: git.Branch{Name: "protected/api", Upstream: "origin/protected/api"},
 			opts:   Options{Remote: "origin", Base: "main"},
 		},
 		{
 			name:   "untracked branch with a remote branch of the same name",
-			branch: git.Branch{Name: "prod/api"},
+			branch: git.Branch{Name: "protected/api"},
 			opts: Options{Remote: "origin", Base: "main",
 				RemoteExists: func(string) bool { return true }},
 		},
@@ -108,7 +108,7 @@ func TestAnalyzeKeepsBranchesStillOnTheRemote(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			// A merged pull request does not change this: the branch is still there.
-			tc.opts.PRs = map[string]github.PR{"prod/api": {Number: 9, Merged: true, State: "MERGED"}}
+			tc.opts.PRs = map[string]github.PR{"protected/api": {Number: 9, Merged: true, State: "MERGED"}}
 			tc.opts.Base = "main"
 			v := only(t, Analyze([]git.Branch{tc.branch}, "main", tc.opts))
 			if v.Delete {

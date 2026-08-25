@@ -28,7 +28,7 @@
         "minLength": 1
       },
       "uniqueItems": true,
-      "examples": [["prod/*", "release"]]
+      "examples": [["protected/*", "release"]]
     },
     "keepClosed": {
       "type": "boolean",

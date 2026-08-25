@@ -52,18 +52,18 @@ func TestSetRejectsBadValues(t *testing.T) {
 func TestListKeyAddAndRemove(t *testing.T) {
 	var file File
 
-	if err := Add(&file, "protected", []string{"prod/*", "release"}); err != nil {
+	if err := Add(&file, "protected", []string{"protected/*", "release"}); err != nil {
 		t.Fatal(err)
 	}
 	// Adding what is already there changes nothing.
 	if err := Add(&file, "protected", []string{"release"}); err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"prod/*", "release"}; !reflect.DeepEqual(file.Protected, want) {
+	if want := []string{"protected/*", "release"}; !reflect.DeepEqual(file.Protected, want) {
 		t.Fatalf("protected = %v, want %v", file.Protected, want)
 	}
 
-	if err := Remove(&file, "protected", []string{"prod/*"}); err != nil {
+	if err := Remove(&file, "protected", []string{"protected/*"}); err != nil {
 		t.Fatal(err)
 	}
 	if want := []string{"release"}; !reflect.DeepEqual(file.Protected, want) {
@@ -71,10 +71,10 @@ func TestListKeyAddAndRemove(t *testing.T) {
 	}
 
 	// Set replaces rather than appends.
-	if err := Set(&file, "protected", []string{"beta/*"}); err != nil {
+	if err := Set(&file, "protected", []string{"staging/*"}); err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"beta/*"}; !reflect.DeepEqual(file.Protected, want) {
+	if want := []string{"staging/*"}; !reflect.DeepEqual(file.Protected, want) {
 		t.Errorf("protected = %v, want %v", file.Protected, want)
 	}
 }
@@ -95,7 +95,7 @@ func TestSaveRoundTrip(t *testing.T) {
 	if err := Set(&file, "base", []string{"main"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := Add(&file, "protected", []string{"prod/*"}); err != nil {
+	if err := Add(&file, "protected", []string{"protected/*"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := Save(path, file); err != nil {
