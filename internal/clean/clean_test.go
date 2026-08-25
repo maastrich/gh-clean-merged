@@ -109,6 +109,7 @@ func TestAnalyzeKeepsBranchesStillOnTheRemote(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// A merged pull request does not change this: the branch is still there.
 			tc.opts.PRs = map[string]github.PR{"prod/lcm": {Number: 9, Merged: true, State: "MERGED"}}
+			tc.opts.Base = "main"
 			v := only(t, Analyze([]git.Branch{tc.branch}, "main", tc.opts))
 			if v.Delete {
 				t.Fatalf("branch should be kept, got reason %q", v.Reason)
@@ -117,6 +118,22 @@ func TestAnalyzeKeepsBranchesStillOnTheRemote(t *testing.T) {
 				t.Errorf("reason = %q, want it to mention the remote branch", v.Reason)
 			}
 		})
+	}
+}
+
+// An open pull request says more about a branch than the remote branch it still
+// has, so that is the reason the user gets.
+func TestAnalyzeReportsOpenPullRequestOverLiveRemote(t *testing.T) {
+	v := only(t, Analyze([]git.Branch{{Name: "feature", Upstream: "origin/feature"}}, "main", Options{
+		Remote: "origin",
+		Base:   "main",
+		PRs:    map[string]github.PR{"feature": {Number: 42, State: "OPEN"}},
+	}))
+	if v.Delete || v.Orphan {
+		t.Fatalf("a branch with an open pull request should be kept, got %+v", v)
+	}
+	if v.Reason != "open PR #42" {
+		t.Errorf("reason = %q, want %q", v.Reason, "open PR #42")
 	}
 }
 

@@ -119,14 +119,22 @@ func analyzeBranch(branch git.Branch, current string, opts Options) Verdict {
 		return keep("protected")
 	}
 
+	pr, hasPR := opts.PRs[branch.Name]
+
+	// An open pull request is the most precise thing that can be said about a
+	// branch, so it is what the user is told, rather than the remote branch it
+	// obviously still has.
+	if hasPR && pr.State == "OPEN" {
+		return keep(fmt.Sprintf("open PR #%d", pr.Number))
+	}
+
 	// A branch that still exists on the remote is shared work: someone may be
-	// reviewing it, deploying from it, or merging the base branch into it. Long
-	// lived branches such as prod/*, beta/* and preprod/* live here too.
+	// deploying from it, or merging the base branch into it. Long lived
+	// branches such as prod/*, beta/* and preprod/* live here too.
 	if liveRemote(branch, opts) {
 		return keep(fmt.Sprintf("still on %s", opts.Remote))
 	}
 
-	pr, hasPR := opts.PRs[branch.Name]
 	if !hasPR {
 		// No remote branch and no pull request: nothing outside this machine
 		// knows about it, so the user gets told rather than obeyed.
@@ -134,9 +142,6 @@ func analyzeBranch(branch git.Branch, current string, opts Options) Verdict {
 	}
 
 	switch pr.State {
-	case "OPEN":
-		return keep(fmt.Sprintf("open PR #%d", pr.Number))
-
 	case "MERGED":
 		// git sees the merge only when it left ancestry behind; a squash or a
 		// rebase did not, and needs the forced delete.
