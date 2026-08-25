@@ -1,12 +1,12 @@
 # gh-clean-merged
 
-A [GitHub CLI](https://cli.github.com) extension that deletes the local branches whose work already landed on the base branch — **including branches merged by squash or rebase**, which `git branch --merged` cannot see.
+A [GitHub CLI](https://cli.github.com) extension that deletes the local branches left behind by finished pull requests — **including branches merged by squash or rebase**, which `git branch --merged` cannot see.
 
 ## Why
 
 `git branch -d` refuses to delete a squash-merged branch: squashing creates a brand new commit on the base branch with no ancestry link to the branch, so git has no way to tell that the work landed. Repositories with "Squash and merge" enabled therefore accumulate stale local branches forever, and clearing them by hand means checking each one against GitHub.
 
-This extension does that check for you, and only deletes what it can justify.
+This extension asks GitHub instead. A branch that still exists on the remote is shared work and is left alone; what remains is judged on its pull request, and anything with no pull request at all is reported rather than deleted.
 
 ## Install
 
@@ -31,36 +31,49 @@ gh clean-merged --verbose    # also list the kept branches and why
 | --- | --- |
 | `-n`, `--dry-run` | List what would be deleted and exit |
 | `-y`, `--yes` | Delete without asking for confirmation |
-| `-b`, `--base` | Base branch to compare against (default: the repository default branch) |
-| `--remote` | Remote holding the base branch (default `origin`) |
-| `--no-fetch` | Skip `git fetch --prune` and use the refs already on disk |
+| `-b`, `--base` | Base branch orphan branches are compared against (default: the repository default branch) |
+| `--remote` | Remote whose branches count as shared work (default `origin`) |
+| `--keep-closed` | Keep branches whose pull request was closed without merging |
 | `--protected` | Branch names or globs that must never be deleted, e.g. `prod/*` (repeatable, or comma separated) |
-| `--include-live` | Also consider branches whose remote branch still exists, instead of keeping them |
+| `--no-fetch` | Skip `git fetch --prune` and use the refs already on disk |
 | `-v`, `--verbose` | Also list the branches that are kept, with the reason |
+| `--color` | `auto`, `always` or `never` (default `auto`) |
 
 ## How a branch is judged
 
-A branch is deleted only when one of these proves its changes are on the base branch:
+Every local branch goes through the same three questions.
 
-1. **Its pull request is merged on GitHub** — the decisive signal for squash and rebase merges, since GitHub knows the merge happened even though git does not. Pull requests are looked up by branch name, in batches, so a branch merged long ago resolves the same as one merged this morning.
-2. **Contained in the base branch** — the ordinary merge-commit or fast-forward case, which git can prove on its own.
-3. **Its diff is already applied** — for branches that never had a pull request, the branch's cumulative change is compared against the patches in the base branch by patch id.
+**1. Does it still exist on the remote?** Then it is shared work — someone may be reviewing it, deploying from it, or merging the base branch into it — and it is left alone. Long lived branches such as `prod/*`, `beta/*` and `preprod/*` live here: they carry no pull request of their own and sit behind the base branch, so any content comparison would wrongly call them merged.
 
-Signals 2 and 3 only apply to branches whose remote counterpart is gone, because a live remote branch means the branch is still shared work — see below.
+**2. Otherwise, what does its pull request say?**
 
-Everything else is kept, with the reason printed under `--verbose`. In particular:
+| Pull request | Outcome |
+| --- | --- |
+| Merged | Deleted. Squash and rebase merges included: GitHub knows the merge happened even though git does not. |
+| Closed without merging | Deleted, since the work was abandoned and the remote branch is already gone. Pass `--keep-closed` to hold on to them. |
+| Open | Kept |
 
-- **A branch that still exists on the remote is kept** unless a merged pull request says otherwise. Long lived branches — `prod/*`, `beta/*`, `preprod/*` and friends — never have a pull request of their own and sit behind the base branch, either because the base branch is merged into them or because they track an older release commit. That makes them look merged to any content comparison, and their live remote branch is what tells them apart from finished work. Pass `--include-live` to judge those on content alone, and `--protected 'prod/*'` to keep specific ones regardless.
-- **A deleted remote branch is not proof.** `git fetch --prune` marking an upstream as gone happens on abandoned pull requests too, so a `gone` branch with changes of its own is kept.
-- **An open pull request outranks every other signal**, even if the changes already reached the base branch some other way.
-- **A pull request from a fork never matches a local branch**, even when the branch names are identical — that match would delete unrelated local work.
-- **The current branch, the base branch, and branches checked out in another worktree** are never touched.
+Pull requests are looked up by branch name, in batches, so a branch merged long ago resolves the same as one merged this morning. Pull requests opened from a fork never match a local branch, even when the branch names are identical.
 
-Branches proved by signal 1 are removed with `git branch -d`. Signals 2 and 3 need `git branch -D`, because git itself cannot see those merges — which is why the output states the signal that justified each deletion.
+**3. No remote branch and no pull request?** Then nothing outside this machine knows about it, so it is never deleted — only listed, with where it stands versus the base branch, for you to decide:
+
+```
+Not on origin and no pull request, left alone
+  ? wip/lcm-agent-full        no pull request, changes not in origin/master
+  ? pr-6471-review            no pull request, changes already in origin/master
+```
+
+The current branch, the base branch, branches checked out in another worktree and anything matching `--protected` are never touched.
+
+Branches whose merge left ancestry behind are removed with `git branch -d`. Squash merges, rebase merges and abandoned branches need `git branch -D`, because git itself cannot see those merges — which is why the output states the pull request behind each deletion.
+
+## Output
+
+Sections are colour coded, and the colours come from the sixteen ANSI colours rather than fixed RGB values, so they follow whatever theme the terminal is set to instead of glaring on a light background or disappearing on a dark one. Colour turns itself off when the output is piped, when `TERM=dumb`, and when [`NO_COLOR`](https://no-color.org) is set; `--color=always` forces it back on.
 
 ## Speed
 
-Judging a branch costs a handful of git processes, and the patch comparison walks the base branch, so branches are analysed in parallel across the available cores. The pull request lookup is a handful of batched GraphQL requests rather than one per branch. A repository with ~250 local branches takes a couple of seconds, plus the `git fetch` — pass `--no-fetch` to skip that when the refs are fresh.
+Branches are analysed in parallel across the available cores, and the pull request lookup is a handful of batched GraphQL requests rather than one per branch. A repository with ~290 local branches takes a couple of seconds, plus the `git fetch` — pass `--no-fetch` to skip that when the refs are fresh.
 
 ## Development
 

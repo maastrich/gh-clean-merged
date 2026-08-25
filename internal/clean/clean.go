@@ -1,5 +1,11 @@
 // Package clean decides, branch by branch, whether a local branch is safe to
 // delete and why.
+//
+// The rule is deliberately simple: a branch that still exists on the remote is
+// shared work and is left alone. What remains is local leftovers, and their
+// pull request says what happened to them. A branch with neither a remote
+// counterpart nor a pull request is nobody's business but the user's, so it is
+// reported instead of deleted.
 package clean
 
 import (
@@ -20,6 +26,9 @@ type Verdict struct {
 	// Force reports whether removal needs `git branch -D`, which is the case
 	// whenever git itself cannot see the merge (squash and rebase merges).
 	Force bool
+	// Orphan marks a branch with no remote counterpart and no pull request.
+	// Nothing can vouch for it, so it is reported rather than deleted.
+	Orphan bool
 	// Reason explains the verdict in one line, for the user to audit.
 	Reason string
 }
@@ -28,7 +37,7 @@ type Verdict struct {
 type Options struct {
 	// Remote holding the base branch, usually "origin".
 	Remote string
-	// Base branch every candidate is compared against, e.g. "main".
+	// Base branch orphan branches are described against, e.g. "main".
 	Base string
 	// PRs maps head branch name to its pull request; may be nil when the
 	// GitHub lookup was skipped or failed.
@@ -37,13 +46,11 @@ type Options struct {
 	// on top of the current and base branches.
 	Protected []string
 	// RemoteExists reports whether a branch of that name still exists on the
-	// remote. Long lived branches such as deploy branches sit behind the base
-	// branch, which makes them look merged, so a live remote counterpart keeps
-	// them unless a merged pull request says otherwise.
+	// remote, for branches that carry no tracking configuration.
 	RemoteExists func(branch string) bool
-	// IncludeLive drops that protection and judges branches with a live remote
-	// counterpart on their content alone.
-	IncludeLive bool
+	// KeepClosed keeps branches whose pull request was closed without merging,
+	// instead of deleting them along with the merged ones.
+	KeepClosed bool
 }
 
 // protects reports whether the branch matches one of the protected patterns.
@@ -60,13 +67,12 @@ func (o Options) protects(branch string) bool {
 	return false
 }
 
-// Analyze classifies every local branch against the base branch.
+// Analyze classifies every local branch.
 //
-// Judging a branch costs a handful of git processes, and the patch comparison
-// walks the base branch, so branches are analysed concurrently. Results stay in
-// input order.
+// Describing an orphan branch costs a handful of git processes and walks the
+// base branch, so branches are analysed concurrently. Results stay in input
+// order.
 func Analyze(branches []git.Branch, current string, opts Options) []Verdict {
-	baseRef := opts.Remote + "/" + opts.Base
 	verdicts := make([]Verdict, len(branches))
 
 	workers := runtime.NumCPU()
@@ -84,7 +90,7 @@ func Analyze(branches []git.Branch, current string, opts Options) []Verdict {
 		go func() {
 			defer wg.Done()
 			for index := range indexes {
-				verdicts[index] = analyzeBranch(branches[index], current, baseRef, opts)
+				verdicts[index] = analyzeBranch(branches[index], current, opts)
 			}
 		}()
 	}
@@ -97,7 +103,7 @@ func Analyze(branches []git.Branch, current string, opts Options) []Verdict {
 	return verdicts
 }
 
-func analyzeBranch(branch git.Branch, current, baseRef string, opts Options) Verdict {
+func analyzeBranch(branch git.Branch, current string, opts Options) Verdict {
 	keep := func(reason string) Verdict {
 		return Verdict{Branch: branch, Reason: reason}
 	}
@@ -113,76 +119,70 @@ func analyzeBranch(branch git.Branch, current, baseRef string, opts Options) Ver
 		return keep("protected")
 	}
 
-	pr, hasPR := opts.PRs[branch.Name]
-
-	// An open pull request outranks every other signal: even if the branch's
-	// changes already landed in base some other way, deleting it locally while
-	// review is in flight is not what the user wants.
-	if hasPR && pr.State == "OPEN" {
-		return keep(fmt.Sprintf("open PR #%d", pr.Number))
+	// A branch that still exists on the remote is shared work: someone may be
+	// reviewing it, deploying from it, or merging the base branch into it. Long
+	// lived branches such as prod/*, beta/* and preprod/* live here too.
+	if liveRemote(branch, opts) {
+		return keep(fmt.Sprintf("still on %s", opts.Remote))
 	}
 
-	// A merged pull request is the one signal that survives everything else: the
-	// branch did its job and GitHub says so.
-	if hasPR && pr.Merged {
+	pr, hasPR := opts.PRs[branch.Name]
+	if !hasPR {
+		// No remote branch and no pull request: nothing outside this machine
+		// knows about it, so the user gets told rather than obeyed.
+		return Verdict{Branch: branch, Orphan: true, Reason: describe(branch.Name, opts)}
+	}
+
+	switch pr.State {
+	case "OPEN":
+		return keep(fmt.Sprintf("open PR #%d", pr.Number))
+
+	case "MERGED":
+		// git sees the merge only when it left ancestry behind; a squash or a
+		// rebase did not, and needs the forced delete.
+		baseRef := opts.Remote + "/" + opts.Base
 		if git.IsAncestor(branch.Name, baseRef) {
 			return Verdict{Branch: branch, Delete: true, Reason: fmt.Sprintf("PR #%d merged", pr.Number)}
 		}
-		// Squash and rebase merges rewrite history, so the branch is no longer
-		// an ancestor of base and git alone cannot see the merge.
 		return Verdict{
 			Branch: branch,
 			Delete: true,
 			Force:  true,
 			Reason: fmt.Sprintf("PR #%d merged (squash or rebase)", pr.Number),
 		}
-	}
 
-	// Long lived branches such as prod/*, beta/* or preprod/* never have a pull
-	// request of their own: the base branch is merged into them, or they simply
-	// track an older release commit. Both make them look merged. Their remote
-	// counterpart still being there is what tells them apart from finished work.
-	if !opts.IncludeLive && liveRemote(branch, opts) {
-		return keep(fmt.Sprintf("still on %s", opts.Remote))
-	}
-
-	// Plain merge commit or fast-forward: git can prove containment on its own.
-	if git.IsAncestor(branch.Name, baseRef) {
-		return Verdict{Branch: branch, Delete: true, Reason: fmt.Sprintf("merged into %s", baseRef)}
-	}
-
-	// No pull request, or one we could not read: fall back to comparing the
-	// branch's cumulative diff against the patches already in base.
-	state, err := git.SquashMerged(branch.Name, baseRef)
-	if err != nil {
-		return keep(fmt.Sprintf("could not compare with %s: %v", baseRef, err))
-	}
-	switch state {
-	case git.SquashApplied:
+	default: // CLOSED
+		if opts.KeepClosed {
+			return keep(fmt.Sprintf("PR #%d closed without merging", pr.Number))
+		}
+		// The work was abandoned and the remote branch is already gone, so the
+		// commits only survive here. The forced delete is the point.
 		return Verdict{
 			Branch: branch,
 			Delete: true,
 			Force:  true,
-			Reason: fmt.Sprintf("changes already in %s (squash or rebase)", baseRef),
-		}
-	case git.SquashEmpty:
-		return Verdict{
-			Branch: branch,
-			Delete: true,
-			Force:  true,
-			Reason: fmt.Sprintf("no changes of its own versus %s", baseRef),
+			Reason: fmt.Sprintf("PR #%d closed without merging", pr.Number),
 		}
 	}
+}
 
-	if hasPR && pr.State == "CLOSED" {
-		return keep(fmt.Sprintf("PR #%d closed without merging", pr.Number))
+// describe says where an orphan branch stands versus the base branch, so the
+// user can tell leftovers worth deleting from work worth keeping.
+func describe(branch string, opts Options) string {
+	baseRef := opts.Remote + "/" + opts.Base
+
+	if git.IsAncestor(branch, baseRef) {
+		return fmt.Sprintf("no pull request, already merged into %s", baseRef)
 	}
-	if branch.Gone {
-		// The remote branch was deleted but nothing proves the work landed, so
-		// this is exactly the case where an unconditional sweep loses commits.
-		return keep("upstream gone but changes not in " + baseRef)
+	switch state, err := git.SquashMerged(branch, baseRef); {
+	case err != nil:
+		return "no pull request"
+	case state == git.SquashApplied:
+		return fmt.Sprintf("no pull request, changes already in %s", baseRef)
+	case state == git.SquashEmpty:
+		return fmt.Sprintf("no pull request, no changes of its own versus %s", baseRef)
 	}
-	return keep("has unmerged changes")
+	return fmt.Sprintf("no pull request, changes not in %s", baseRef)
 }
 
 // liveRemote reports whether the branch still has a counterpart on the remote.
@@ -197,9 +197,23 @@ func liveRemote(branch git.Branch, opts Options) bool {
 
 // Deletable filters verdicts down to the branches that will be removed.
 func Deletable(verdicts []Verdict) []Verdict {
+	return filter(verdicts, func(v Verdict) bool { return v.Delete })
+}
+
+// Kept filters verdicts down to the branches that stay, orphans included.
+func Kept(verdicts []Verdict) []Verdict {
+	return filter(verdicts, func(v Verdict) bool { return !v.Delete && !v.Orphan })
+}
+
+// Orphans filters verdicts down to the branches nothing can vouch for.
+func Orphans(verdicts []Verdict) []Verdict {
+	return filter(verdicts, func(v Verdict) bool { return v.Orphan })
+}
+
+func filter(verdicts []Verdict, keep func(Verdict) bool) []Verdict {
 	var result []Verdict
 	for _, v := range verdicts {
-		if v.Delete {
+		if keep(v) {
 			result = append(result, v)
 		}
 	}

@@ -9,28 +9,35 @@ import (
 	"github.com/maastrich/gh-clean-merged/internal/clean"
 	"github.com/maastrich/gh-clean-merged/internal/git"
 	"github.com/maastrich/gh-clean-merged/internal/github"
+	"github.com/maastrich/gh-clean-merged/internal/ui"
 	"github.com/spf13/cobra"
 )
 
 var (
-	dryRun      bool
-	assumeYes   bool
-	base        string
-	remote      string
-	noFetch     bool
-	protected   []string
-	verbose     bool
-	includeLive bool
+	dryRun     bool
+	assumeYes  bool
+	base       string
+	remote     string
+	noFetch    bool
+	protected  []string
+	verbose    bool
+	keepClosed bool
+	colorMode  string
 )
 
 var rootCmd = &cobra.Command{
 	Use:   "gh clean-merged",
-	Short: "Delete local branches whose work already landed on the base branch",
-	Long: `Delete local git branches whose changes are already on the base branch.
+	Short: "Delete the local branches whose pull request is closed or merged",
+	Long: `Delete the local git branches left behind by finished pull requests.
 
-Unlike ` + "`git branch --merged`" + `, squash-merged and rebase-merged branches are
-detected too: the pull request state is read from GitHub, and branches without a
-pull request are compared against the base branch by patch content.
+A branch that still exists on the remote is left alone: it is shared work, and
+long lived branches such as prod/*, beta/* or preprod/* live there. What remains
+is local leftovers, and their pull request says what happened to them — merged
+or closed means gone, open means keep. Squash and rebase merges are handled,
+since the answer comes from GitHub rather than from git history.
+
+Branches with neither a remote branch nor a pull request are never deleted, only
+reported.
 
 Nothing is deleted without confirmation unless --yes is passed.`,
 	SilenceUsage:  true,
@@ -47,15 +54,18 @@ func init() {
 	flags := rootCmd.Flags()
 	flags.BoolVarP(&dryRun, "dry-run", "n", false, "List what would be deleted and exit")
 	flags.BoolVarP(&assumeYes, "yes", "y", false, "Delete without asking for confirmation")
-	flags.StringVarP(&base, "base", "b", "", "Base branch to compare against (default: the repository default branch)")
-	flags.StringVar(&remote, "remote", "origin", "Remote holding the base branch")
-	flags.BoolVar(&noFetch, "no-fetch", false, "Skip `git fetch --prune`, comparing against the refs already on disk")
+	flags.StringVarP(&base, "base", "b", "", "Base branch orphan branches are compared against (default: the repository default branch)")
+	flags.StringVar(&remote, "remote", "origin", "Remote whose branches count as shared work")
+	flags.BoolVar(&noFetch, "no-fetch", false, "Skip `git fetch --prune`, using the refs already on disk")
 	flags.StringSliceVar(&protected, "protected", nil, "Branch names or globs that must never be deleted, e.g. `prod/*` (repeatable, or comma separated)")
-	flags.BoolVar(&includeLive, "include-live", false, "Also consider branches whose remote branch still exists, instead of keeping them")
+	flags.BoolVar(&keepClosed, "keep-closed", false, "Keep branches whose pull request was closed without merging")
 	flags.BoolVarP(&verbose, "verbose", "v", false, "Also list the branches that are kept, with the reason")
+	flags.StringVar(&colorMode, "color", ui.Auto, "Colour output: auto, always or never")
 }
 
 func run(cmd *cobra.Command, args []string) error {
+	out := ui.New(os.Stdout, colorMode)
+
 	if !git.IsRepo() {
 		return fmt.Errorf("not inside a git repository")
 	}
@@ -67,12 +77,12 @@ func run(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// The GitHub lookup is what makes squash-merged pull requests visible, but
-	// it needs a remote repository. Without it we still run on git signals only.
+	// Pull request state is what tells a leftover branch from work in progress.
+	// Without it, branches are reported instead of deleted.
 	repo, repoErr := github.CurrentRepo()
 	if repoErr != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not resolve the GitHub repository (%v)\n", repoErr)
-		fmt.Fprintln(os.Stderr, "Warning: falling back to local comparison only")
+		warn(out, fmt.Sprintf("could not resolve the GitHub repository (%v)", repoErr))
+		warn(out, "branches will be reported, not deleted")
 	}
 
 	if base == "" {
@@ -92,68 +102,102 @@ func run(cmd *cobra.Command, args []string) error {
 
 	var prs map[string]github.PR
 	if repoErr == nil {
-		names := make([]string, 0, len(branches))
-		for _, branch := range branches {
-			if branch.Name != base {
-				names = append(names, branch.Name)
-			}
-		}
-		if prs, err = github.PullRequestsByBranch(repo, names); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: could not look up pull requests (%v)\n", err)
-			fmt.Fprintln(os.Stderr, "Warning: falling back to local comparison only")
-		}
-	}
-
-	patterns := make([]string, 0, len(protected))
-	for _, pattern := range protected {
-		if pattern = strings.TrimSpace(pattern); pattern != "" {
-			patterns = append(patterns, pattern)
+		if prs, err = github.PullRequestsByBranch(repo, branchNames(branches)); err != nil {
+			warn(out, fmt.Sprintf("could not look up pull requests (%v)", err))
+			warn(out, "branches will be reported, not deleted")
 		}
 	}
 
 	verdicts := clean.Analyze(branches, git.CurrentBranch(), clean.Options{
-		Remote:      remote,
-		Base:        base,
-		PRs:         prs,
-		Protected:   patterns,
-		IncludeLive: includeLive,
+		Remote:     remote,
+		Base:       base,
+		PRs:        prs,
+		Protected:  patterns(),
+		KeepClosed: keepClosed,
 		RemoteExists: func(branch string) bool {
 			return git.HasRemoteRef(remote, branch)
 		},
 	})
 
+	out.Printf("%s %s  %s\n\n",
+		out.Bold("Base branch"),
+		out.Cyan(remote+"/"+base),
+		out.Dim(fmt.Sprintf("%d local branches", len(branches))),
+	)
+
 	if verbose {
-		printKept(verdicts)
+		out.Section("Kept", rows(out, clean.Kept(verdicts), "-", out.Dim))
 	}
+	// Branches with neither a remote counterpart nor a pull request are never
+	// touched, but they are exactly what a cleanup run should surface.
+	orphans := clean.Orphans(verdicts)
+	out.Section(
+		fmt.Sprintf("Not on %s and no pull request, left alone", remote),
+		rows(out, orphans, "?", out.Yellow),
+	)
 
 	targets := clean.Deletable(verdicts)
 	if len(targets) == 0 {
-		fmt.Printf("No local branch is fully merged into %s/%s.\n", remote, base)
+		out.Printf("%s\n", out.Green("Nothing to delete."))
 		return nil
 	}
 
-	fmt.Printf("Branches merged into %s/%s:\n", remote, base)
-	for _, v := range targets {
-		fmt.Printf("  %s  (%s)\n", v.Branch.Name, v.Reason)
-	}
+	out.Section("Pull request closed or merged, safe to delete", rows(out, targets, "x", out.Red))
 
 	if dryRun {
-		fmt.Printf("\nDry run: %s left untouched.\n", plural(len(targets)))
+		out.Printf("%s\n", out.Dim(fmt.Sprintf("Dry run: %s left untouched.", plural(len(targets)))))
 		return nil
 	}
 
 	if !assumeYes {
-		ok, err := confirm(len(targets))
+		ok, err := confirm(out, len(targets))
 		if err != nil {
 			return err
 		}
 		if !ok {
-			fmt.Println("Aborted, nothing deleted.")
+			out.Printf("%s\n", out.Dim("Aborted, nothing deleted."))
 			return nil
 		}
 	}
 
-	return deleteBranches(targets)
+	return deleteBranches(out, targets)
+}
+
+func rows(out *ui.Printer, verdicts []clean.Verdict, marker string, paint func(string) string) []ui.Row {
+	result := make([]ui.Row, 0, len(verdicts))
+	for _, v := range verdicts {
+		result = append(result, ui.Row{
+			Marker: marker,
+			Name:   v.Branch.Name,
+			Reason: v.Reason,
+			Paint:  paint,
+		})
+	}
+	return result
+}
+
+func branchNames(branches []git.Branch) []string {
+	names := make([]string, 0, len(branches))
+	for _, branch := range branches {
+		if branch.Name != base {
+			names = append(names, branch.Name)
+		}
+	}
+	return names
+}
+
+func patterns() []string {
+	result := make([]string, 0, len(protected))
+	for _, pattern := range protected {
+		if pattern = strings.TrimSpace(pattern); pattern != "" {
+			result = append(result, pattern)
+		}
+	}
+	return result
+}
+
+func warn(out *ui.Printer, message string) {
+	fmt.Fprintf(os.Stderr, "%s %s\n", out.Yellow("Warning:"), message)
 }
 
 // resolveBase prefers the remote's HEAD, which reflects what the local clone
@@ -165,30 +209,13 @@ func resolveBase(repo github.Repo) string {
 	return repo.DefaultBranch
 }
 
-func printKept(verdicts []clean.Verdict) {
-	var kept []clean.Verdict
-	for _, v := range verdicts {
-		if !v.Delete {
-			kept = append(kept, v)
-		}
-	}
-	if len(kept) == 0 {
-		return
-	}
-	fmt.Println("Kept:")
-	for _, v := range kept {
-		fmt.Printf("  %s  (%s)\n", v.Branch.Name, v.Reason)
-	}
-	fmt.Println()
-}
-
-func confirm(count int) (bool, error) {
+func confirm(out *ui.Printer, count int) (bool, error) {
 	stat, err := os.Stdin.Stat()
 	if err != nil || stat.Mode()&os.ModeCharDevice == 0 {
 		return false, fmt.Errorf("cannot ask for confirmation without a terminal, pass --yes or --dry-run")
 	}
 
-	fmt.Printf("\nDelete %s? [y/N] ", plural(count))
+	out.Printf("%s ", out.Bold(fmt.Sprintf("Delete %s? [y/N]", plural(count))))
 	answer, err := bufio.NewReader(os.Stdin).ReadString('\n')
 	if err != nil {
 		return false, err
@@ -197,23 +224,23 @@ func confirm(count int) (bool, error) {
 	return answer == "y" || answer == "yes", nil
 }
 
-func deleteBranches(targets []clean.Verdict) error {
+func deleteBranches(out *ui.Printer, targets []clean.Verdict) error {
 	var failed int
 	for _, v := range targets {
 		// A squash-merged branch is invisible to `git branch -d`, so those need
 		// -D. The verdict records which signal justified it.
 		if err := git.Delete(v.Branch.Name, v.Force); err != nil {
-			fmt.Fprintf(os.Stderr, "  failed to delete %s: %v\n", v.Branch.Name, err)
+			fmt.Fprintf(os.Stderr, "  %s %s: %v\n", out.Red("failed"), v.Branch.Name, err)
 			failed++
 			continue
 		}
-		fmt.Printf("  deleted %s\n", v.Branch.Name)
+		out.Printf("  %s %s\n", out.Green("deleted"), v.Branch.Name)
 	}
 
 	if failed > 0 {
 		return fmt.Errorf("%d of %d branches could not be deleted", failed, len(targets))
 	}
-	fmt.Printf("\nDeleted %s.\n", plural(len(targets)))
+	out.Printf("\n%s\n", out.Green(fmt.Sprintf("Deleted %s.", plural(len(targets)))))
 	return nil
 }
 

@@ -28,6 +28,7 @@ func only(t *testing.T, verdicts []Verdict) Verdict {
 }
 
 // These branches are answered before any git command runs, so they need no repository.
+// These branches are answered before any git command runs, so they need no repository.
 func TestAnalyzeKeepsProtectedBranches(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -67,21 +68,13 @@ func TestAnalyzeKeepsProtectedBranches(t *testing.T) {
 			opts:   Options{Remote: "origin", Base: "main", Protected: []string{"release"}},
 			reason: "protected",
 		},
-		{
-			name:   "open pull request",
-			branch: git.Branch{Name: "feature"},
-			opts: Options{Remote: "origin", Base: "main", PRs: map[string]github.PR{
-				"feature": {Number: 7, State: "OPEN"},
-			}},
-			reason: "open PR #7",
-		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			v := only(t, Analyze([]git.Branch{tc.branch}, tc.current, tc.opts))
-			if v.Delete {
-				t.Fatalf("branch %q should be kept, reason %q", tc.branch.Name, v.Reason)
+			if v.Delete || v.Orphan {
+				t.Fatalf("branch %q should be kept, got %+v", tc.branch.Name, v)
 			}
 			if !strings.Contains(v.Reason, tc.reason) {
 				t.Errorf("reason = %q, want it to mention %q", v.Reason, tc.reason)
@@ -90,13 +83,52 @@ func TestAnalyzeKeepsProtectedBranches(t *testing.T) {
 	}
 }
 
-func TestAnalyzeAgainstRepository(t *testing.T) {
+// A branch still on the remote is shared work, whatever its content says.
+// Deploy branches such as prod/* live here: they carry no pull request and sit
+// behind the base branch, so any content comparison would call them merged.
+func TestAnalyzeKeepsBranchesStillOnTheRemote(t *testing.T) {
+	cases := []struct {
+		name   string
+		branch git.Branch
+		opts   Options
+	}{
+		{
+			name:   "tracked branch whose upstream is alive",
+			branch: git.Branch{Name: "prod/lcm", Upstream: "origin/prod/lcm"},
+			opts:   Options{Remote: "origin", Base: "main"},
+		},
+		{
+			name:   "untracked branch with a remote branch of the same name",
+			branch: git.Branch{Name: "prod/lcm"},
+			opts: Options{Remote: "origin", Base: "main",
+				RemoteExists: func(string) bool { return true }},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// A merged pull request does not change this: the branch is still there.
+			tc.opts.PRs = map[string]github.PR{"prod/lcm": {Number: 9, Merged: true, State: "MERGED"}}
+			v := only(t, Analyze([]git.Branch{tc.branch}, "main", tc.opts))
+			if v.Delete {
+				t.Fatalf("branch should be kept, got reason %q", v.Reason)
+			}
+			if !strings.Contains(v.Reason, "still on origin") {
+				t.Errorf("reason = %q, want it to mention the remote branch", v.Reason)
+			}
+		})
+	}
+}
+
+// Once the remote branch is gone, the pull request decides.
+func TestAnalyzePullRequestDecidesGoneBranches(t *testing.T) {
 	fixture(t)
 
 	cases := []struct {
 		name      string
 		branch    string
-		prs       map[string]github.PR
+		pr        github.PR
+		opts      Options
 		wantDel   bool
 		wantForce bool
 		reason    string
@@ -104,57 +136,50 @@ func TestAnalyzeAgainstRepository(t *testing.T) {
 		{
 			name:    "merge commit is visible to git",
 			branch:  "merged",
+			pr:      github.PR{Number: 1, Merged: true, State: "MERGED"},
 			wantDel: true,
-			reason:  "merged into origin/main",
+			reason:  "PR #1 merged",
 		},
 		{
-			name:      "squash merge reported by GitHub",
+			name:      "squash merge needs the forced delete",
 			branch:    "squashed",
-			prs:       map[string]github.PR{"squashed": {Number: 12, Merged: true, State: "MERGED"}},
+			pr:        github.PR{Number: 12, Merged: true, State: "MERGED"},
 			wantDel:   true,
 			wantForce: true,
 			reason:    "PR #12 merged (squash or rebase)",
 		},
 		{
-			name:      "squash merge detected without a pull request",
-			branch:    "squashed",
+			name:      "closed without merging",
+			branch:    "unmerged",
+			pr:        github.PR{Number: 3, State: "CLOSED"},
 			wantDel:   true,
 			wantForce: true,
-			reason:    "changes already in origin/main",
+			reason:    "PR #3 closed without merging",
 		},
 		{
-			name:    "branch sitting on the base branch",
-			branch:  "empty",
-			wantDel: true,
-			reason:  "merged into origin/main",
-		},
-		{
-			name:      "branch whose commits cancel out",
-			branch:    "noop",
-			wantDel:   true,
-			wantForce: true,
-			reason:    "no changes of its own",
-		},
-		{
-			name:   "unmerged work is kept",
+			name:   "closed without merging, kept on request",
 			branch: "unmerged",
-			reason: "has unmerged changes",
-		},
-		{
-			name:   "closed pull request is kept",
-			branch: "unmerged",
-			prs:    map[string]github.PR{"unmerged": {Number: 3, State: "CLOSED"}},
+			pr:     github.PR{Number: 3, State: "CLOSED"},
+			opts:   Options{KeepClosed: true},
 			reason: "PR #3 closed without merging",
+		},
+		{
+			name:   "open pull request",
+			branch: "unmerged",
+			pr:     github.PR{Number: 4, State: "OPEN"},
+			reason: "open PR #4",
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			v := only(t, Analyze(branches(tc.branch), "main", Options{
-				Remote: "origin",
-				Base:   "main",
-				PRs:    tc.prs,
-			}))
+			opts := tc.opts
+			opts.Remote, opts.Base = "origin", "main"
+			opts.PRs = map[string]github.PR{tc.branch: tc.pr}
+			// The remote branch is gone: no upstream, and no branch of that name.
+			opts.RemoteExists = func(string) bool { return false }
+
+			v := only(t, Analyze(branches(tc.branch), "main", opts))
 			if v.Delete != tc.wantDel {
 				t.Fatalf("Delete = %v, want %v (reason %q)", v.Delete, tc.wantDel, v.Reason)
 			}
@@ -168,81 +193,69 @@ func TestAnalyzeAgainstRepository(t *testing.T) {
 	}
 }
 
-// A branch whose upstream disappeared is only a candidate: the remote branch may
-// have been deleted on a pull request that was never merged.
-func TestAnalyzeKeepsGoneBranchWithUnmergedWork(t *testing.T) {
+// A branch with no remote branch and no pull request is nobody else's business:
+// it is reported so the user can decide, never deleted.
+func TestAnalyzeReportsOrphans(t *testing.T) {
 	fixture(t)
 
-	v := only(t, Analyze([]git.Branch{{Name: "unmerged", Upstream: "origin/unmerged", Gone: true}}, "main", Options{
-		Remote: "origin",
-		Base:   "main",
-	}))
-	if v.Delete {
-		t.Fatalf("gone branch with unmerged work should be kept, got reason %q", v.Reason)
+	cases := []struct {
+		branch string
+		reason string
+	}{
+		{"merged", "no pull request, already merged into origin/main"},
+		{"squashed", "no pull request, changes already in origin/main"},
+		{"noop", "no pull request, no changes of its own versus origin/main"},
+		{"unmerged", "no pull request, changes not in origin/main"},
 	}
-	if !strings.Contains(v.Reason, "upstream gone") {
-		t.Errorf("reason = %q, want it to mention the gone upstream", v.Reason)
+
+	for _, tc := range cases {
+		t.Run(tc.branch, func(t *testing.T) {
+			v := only(t, Analyze(branches(tc.branch), "main", Options{
+				Remote:       "origin",
+				Base:         "main",
+				RemoteExists: func(string) bool { return false },
+			}))
+			if v.Delete {
+				t.Fatalf("an orphan branch must never be deleted, got reason %q", v.Reason)
+			}
+			if !v.Orphan {
+				t.Errorf("branch %q should be reported as an orphan", tc.branch)
+			}
+			if v.Reason != tc.reason {
+				t.Errorf("reason = %q, want %q", v.Reason, tc.reason)
+			}
+		})
 	}
 }
 
-// Deploy branches such as prod/* carry no pull request and sit behind the base
-// branch, which makes them look merged. Their live remote branch is what keeps
-// them, and a merged pull request is what overrides that.
-func TestAnalyzeKeepsBranchesWithLiveRemote(t *testing.T) {
+// A branch whose upstream is marked gone counts as having no remote branch.
+func TestAnalyzeTreatsGoneUpstreamAsNoRemote(t *testing.T) {
 	fixture(t)
 
-	live := git.Branch{Name: "empty", Upstream: "origin/empty"}
-	v := only(t, Analyze([]git.Branch{live}, "main", Options{Remote: "origin", Base: "main"}))
-	if v.Delete {
-		t.Fatalf("a branch still on the remote should be kept, got reason %q", v.Reason)
-	}
-	if !strings.Contains(v.Reason, "still on origin") {
-		t.Errorf("reason = %q, want it to mention the live remote branch", v.Reason)
-	}
-
-	// --include-live judges it on content alone.
-	v = only(t, Analyze([]git.Branch{live}, "main", Options{Remote: "origin", Base: "main", IncludeLive: true}))
-	if !v.Delete {
-		t.Errorf("with IncludeLive the branch should be deleted, got reason %q", v.Reason)
-	}
-
-	// A merged pull request outranks the live remote branch.
-	v = only(t, Analyze([]git.Branch{{Name: "squashed", Upstream: "origin/squashed"}}, "main", Options{
+	v := only(t, Analyze([]git.Branch{{Name: "squashed", Upstream: "origin/squashed", Gone: true}}, "main", Options{
 		Remote: "origin",
 		Base:   "main",
-		PRs:    map[string]github.PR{"squashed": {Number: 4, Merged: true, State: "MERGED"}},
+		PRs:    map[string]github.PR{"squashed": {Number: 8, Merged: true, State: "MERGED"}},
 	}))
 	if !v.Delete || !v.Force {
-		t.Errorf("a merged pull request should delete the branch, got %+v", v)
+		t.Errorf("a gone branch with a merged pull request should be force deleted, got %+v", v)
 	}
 }
 
-// Without tracking configuration the remote branch is looked up by name.
-func TestAnalyzeKeepsUntrackedBranchWithRemoteOfSameName(t *testing.T) {
-	fixture(t)
-
-	v := only(t, Analyze(branches("merged"), "main", Options{
-		Remote:       "origin",
-		Base:         "main",
-		RemoteExists: func(string) bool { return true },
-	}))
-	if v.Delete {
-		t.Fatalf("branch should be kept, got reason %q", v.Reason)
-	}
-	if !strings.Contains(v.Reason, "still on origin") {
-		t.Errorf("reason = %q, want it to mention the live remote branch", v.Reason)
-	}
-}
-
-func TestDeletable(t *testing.T) {
+func TestFilters(t *testing.T) {
 	verdicts := []Verdict{
 		{Branch: git.Branch{Name: "a"}, Delete: true},
 		{Branch: git.Branch{Name: "b"}},
-		{Branch: git.Branch{Name: "c"}, Delete: true},
+		{Branch: git.Branch{Name: "c"}, Orphan: true},
 	}
-	got := Deletable(verdicts)
-	if len(got) != 2 || got[0].Branch.Name != "a" || got[1].Branch.Name != "c" {
-		t.Errorf("Deletable returned %v, want branches a and c", got)
+	if got := Deletable(verdicts); len(got) != 1 || got[0].Branch.Name != "a" {
+		t.Errorf("Deletable = %v, want branch a", got)
+	}
+	if got := Orphans(verdicts); len(got) != 1 || got[0].Branch.Name != "c" {
+		t.Errorf("Orphans = %v, want branch c", got)
+	}
+	if got := Kept(verdicts); len(got) != 1 || got[0].Branch.Name != "b" {
+		t.Errorf("Kept = %v, want branch b", got)
 	}
 }
 
