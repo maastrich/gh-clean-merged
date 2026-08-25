@@ -171,13 +171,15 @@ func SquashMerged(branch, base string) (SquashState, error) {
 		return SquashUnknown, err
 	}
 
-	tree, err := run("rev-parse", branch+"^{tree}")
+	// Both trees in one call: this runs once per branch, and a repository with
+	// a few hundred branches feels every extra process.
+	trees, err := run("rev-parse", branch+"^{tree}", mergeBase+"^{tree}")
 	if err != nil {
 		return SquashUnknown, err
 	}
-	baseTree, err := run("rev-parse", mergeBase+"^{tree}")
-	if err != nil {
-		return SquashUnknown, err
+	tree, baseTree, ok := cut(trees, "\n")
+	if !ok {
+		return SquashUnknown, fmt.Errorf("unexpected rev-parse output for %s: %q", branch, trees)
 	}
 	if tree == baseTree {
 		// Empty diff: commit-tree would yield a patch-less commit that git cherry
@@ -207,6 +209,15 @@ func SquashMerged(branch, base string) (SquashState, error) {
 		return SquashApplied, nil
 	}
 	return SquashUnknown, nil
+}
+
+// cut splits s around the first occurrence of sep, like strings.Cut, which is
+// not available in the Go version this module targets.
+func cut(s, sep string) (before, after string, found bool) {
+	if i := strings.Index(s, sep); i >= 0 {
+		return s[:i], s[i+len(sep):], true
+	}
+	return s, "", false
 }
 
 // Delete removes a local branch. force uses -D, required for squash-merged

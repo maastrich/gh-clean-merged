@@ -5,6 +5,8 @@ package clean
 import (
 	"fmt"
 	"path"
+	"runtime"
+	"sync"
 
 	"github.com/maastrich/gh-clean-merged/internal/git"
 	"github.com/maastrich/gh-clean-merged/internal/github"
@@ -59,13 +61,39 @@ func (o Options) protects(branch string) bool {
 }
 
 // Analyze classifies every local branch against the base branch.
+//
+// Judging a branch costs a handful of git processes, and the patch comparison
+// walks the base branch, so branches are analysed concurrently. Results stay in
+// input order.
 func Analyze(branches []git.Branch, current string, opts Options) []Verdict {
 	baseRef := opts.Remote + "/" + opts.Base
+	verdicts := make([]Verdict, len(branches))
 
-	verdicts := make([]Verdict, 0, len(branches))
-	for _, branch := range branches {
-		verdicts = append(verdicts, analyzeBranch(branch, current, baseRef, opts))
+	workers := runtime.NumCPU()
+	if workers > len(branches) {
+		workers = len(branches)
 	}
+	if workers < 1 {
+		workers = 1
+	}
+
+	indexes := make(chan int)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for index := range indexes {
+				verdicts[index] = analyzeBranch(branches[index], current, baseRef, opts)
+			}
+		}()
+	}
+	for index := range branches {
+		indexes <- index
+	}
+	close(indexes)
+	wg.Wait()
+
 	return verdicts
 }
 

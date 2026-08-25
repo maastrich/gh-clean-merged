@@ -19,7 +19,6 @@ var (
 	remote      string
 	noFetch     bool
 	protected   []string
-	prLimit     int
 	verbose     bool
 	includeLive bool
 )
@@ -53,7 +52,6 @@ func init() {
 	flags.BoolVar(&noFetch, "no-fetch", false, "Skip `git fetch --prune`, comparing against the refs already on disk")
 	flags.StringSliceVar(&protected, "protected", nil, "Branch names or globs that must never be deleted, e.g. `prod/*` (repeatable, or comma separated)")
 	flags.BoolVar(&includeLive, "include-live", false, "Also consider branches whose remote branch still exists, instead of keeping them")
-	flags.IntVar(&prLimit, "limit", 200, "Maximum number of pull requests to inspect")
 	flags.BoolVarP(&verbose, "verbose", "v", false, "Also list the branches that are kept, with the reason")
 }
 
@@ -87,19 +85,23 @@ func run(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("%s/%s does not exist, pass --base or --remote", remote, base)
 	}
 
-	var prs map[string]github.PR
-	if repoErr == nil {
-		var err error
-		prs, err = github.PullRequestsByBranch(repo, prLimit)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: could not list pull requests (%v)\n", err)
-			fmt.Fprintln(os.Stderr, "Warning: falling back to local comparison only")
-		}
-	}
-
 	branches, err := git.LocalBranches()
 	if err != nil {
 		return err
+	}
+
+	var prs map[string]github.PR
+	if repoErr == nil {
+		names := make([]string, 0, len(branches))
+		for _, branch := range branches {
+			if branch.Name != base {
+				names = append(names, branch.Name)
+			}
+		}
+		if prs, err = github.PullRequestsByBranch(repo, names); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not look up pull requests (%v)\n", err)
+			fmt.Fprintln(os.Stderr, "Warning: falling back to local comparison only")
+		}
 	}
 
 	patterns := make([]string, 0, len(protected))

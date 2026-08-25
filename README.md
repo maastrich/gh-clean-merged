@@ -36,14 +36,13 @@ gh clean-merged --verbose    # also list the kept branches and why
 | `--no-fetch` | Skip `git fetch --prune` and use the refs already on disk |
 | `--protected` | Branch names or globs that must never be deleted, e.g. `prod/*` (repeatable, or comma separated) |
 | `--include-live` | Also consider branches whose remote branch still exists, instead of keeping them |
-| `--limit` | Maximum number of pull requests to inspect (default `200`) |
 | `-v`, `--verbose` | Also list the branches that are kept, with the reason |
 
 ## How a branch is judged
 
 A branch is deleted only when one of these proves its changes are on the base branch:
 
-1. **Its pull request is merged on GitHub** — the decisive signal for squash and rebase merges, since GitHub knows the merge happened even though git does not.
+1. **Its pull request is merged on GitHub** — the decisive signal for squash and rebase merges, since GitHub knows the merge happened even though git does not. Pull requests are looked up by branch name, in batches, so a branch merged long ago resolves the same as one merged this morning.
 2. **Contained in the base branch** — the ordinary merge-commit or fast-forward case, which git can prove on its own.
 3. **Its diff is already applied** — for branches that never had a pull request, the branch's cumulative change is compared against the patches in the base branch by patch id.
 
@@ -58,6 +57,10 @@ Everything else is kept, with the reason printed under `--verbose`. In particula
 - **The current branch, the base branch, and branches checked out in another worktree** are never touched.
 
 Branches proved by signal 1 are removed with `git branch -d`. Signals 2 and 3 need `git branch -D`, because git itself cannot see those merges — which is why the output states the signal that justified each deletion.
+
+## Speed
+
+Judging a branch costs a handful of git processes, and the patch comparison walks the base branch, so branches are analysed in parallel across the available cores. The pull request lookup is a handful of batched GraphQL requests rather than one per branch. A repository with ~250 local branches takes a couple of seconds, plus the `git fetch` — pass `--no-fetch` to skip that when the refs are fresh.
 
 ## Development
 
